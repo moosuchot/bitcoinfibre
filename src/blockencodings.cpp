@@ -17,8 +17,8 @@
 
 #define MIN_TRANSACTION_SIZE (::GetSerializeSize(CTransaction(), SER_NETWORK, PROTOCOL_VERSION))
 
-CBlockHeaderAndShortTxIDs::CBlockHeaderAndShortTxIDs(const CBlock& block) :
-        nonce(GetRand(std::numeric_limits<uint64_t>::max())),
+CBlockHeaderAndShortTxIDs::CBlockHeaderAndShortTxIDs(const CBlock& block, bool fDeterministic) :
+        nonce(fDeterministic ? block.GetHash().GetUint64(0) : GetRand(std::numeric_limits<uint64_t>::max())),
         shorttxids(block.vtx.size() - 1), prefilledtxn(1), header(block) {
     FillShortTxIDSelector();
     //TODO: Use our mempool prior to block acceptance to predictively fill more than just the coinbase
@@ -180,8 +180,8 @@ ReadStatus PartiallyDownloadedBlock::FillBlock(CBlock& block, const std::vector<
 }
 
 
-CBlockHeaderAndLengthShortTxIDs::CBlockHeaderAndLengthShortTxIDs(const CBlock& block) :
-        CBlockHeaderAndShortTxIDs(block), txlens(shorttxids.size()) {
+CBlockHeaderAndLengthShortTxIDs::CBlockHeaderAndLengthShortTxIDs(const CBlock& block, bool fDeterministic) :
+        CBlockHeaderAndShortTxIDs(block, fDeterministic), txlens(shorttxids.size()) {
     int32_t lastprefilledindex = -1;
     uint16_t index_offset = 0;
     std::vector<PrefilledTransaction>::const_iterator prefilledit = prefilledtxn.begin();
@@ -242,7 +242,7 @@ ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(std::map<size_t, 
 
 #define DIV_CEIL(a, b) (((a) + (b) - 1) / (b))
 
-ChunkCodedBlock::ChunkCodedBlock(const CBlock& block) : headerAndIDs(block) {
+ChunkCodedBlock::ChunkCodedBlock(const CBlock& block, bool fDeterministic) : headerAndIDs(block, fDeterministic) {
     std::map<size_t, size_t> index_offsets;
     assert(headerAndIDs.FillIndexOffsetMap(index_offsets) == READ_STATUS_OK);
 
