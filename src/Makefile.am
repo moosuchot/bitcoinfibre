@@ -202,6 +202,7 @@ libbitcoin_server_a_SOURCES = \
   rpc/mining.cpp \
   rpc/misc.cpp \
   rpc/net.cpp \
+  rpc/udpnet.cpp \
   rpc/rawtransaction.cpp \
   rpc/server.cpp \
   script/sigcache.cpp \
