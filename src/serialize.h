@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "prevector.h"
+#include "version.h"
 
 static const unsigned int MAX_SIZE = 0x02000000;
 
@@ -181,6 +182,60 @@ enum
     template<typename Stream>                                                        \
     void Unserialize(Stream& s, int nType, int nVersion) {                           \
         SerializationOp(s, CSerActionUnserialize(), nType, nVersion);                \
+    }
+
+template<typename Stream>
+class CachingDeserializer {
+private:
+    std::vector<char>* pcache;
+    Stream* s;
+public:
+    CachingDeserializer(std::vector<char>* pcacheIn, Stream* sIn)
+        : pcache(pcacheIn), s(sIn) {
+            pcache->clear();
+        }
+
+    CachingDeserializer<Stream>& read(char* pch, size_t nSize) {
+        pcache->resize(pcache->size() + nSize);
+        s->read(&(*pcache)[pcache->size() - nSize], nSize);
+        memcpy(pch, &(*pcache)[pcache->size() - nSize], nSize);
+        return (*this);
+    }
+};
+
+class VectorSerializer {
+private:
+    std::vector<char>* v;
+public:
+    VectorSerializer(std::vector<char>* vIn) :
+        v(vIn) {}
+
+    VectorSerializer& write(const char* pch, size_t nSize) {
+        v->insert(v->end(), pch, pch + nSize);
+        return *this;
+    }
+};
+
+
+// Object must call RefreshSerialization after change
+#define ADD_CACHED_SERIALIZE_METHODS_OF_CONST_OBJ                                    \
+    std::vector<char> _cachedSerializedForm;                                         \
+    size_t GetSerializeSize(int nType, int nVersion) const {                         \
+        return _cachedSerializedForm.size();                                         \
+    }                                                                                \
+    template<typename Stream>                                                        \
+    void Serialize(Stream& s, int nType, int nVersion) const {                       \
+        s.write(&_cachedSerializedForm[0], _cachedSerializedForm.size());            \
+    }                                                                                \
+    template<typename Stream>                                                        \
+    void Unserialize(Stream& s, int nType, int nVersion) {                           \
+        CachingDeserializer<Stream> new_stream(&_cachedSerializedForm, &s);          \
+        SerializationOp(new_stream, CSerActionUnserialize(), nType, nVersion);       \
+    }                                                                                \
+    void RefreshSerialization() {                                                    \
+        _cachedSerializedForm.clear();                                               \
+        VectorSerializer ser(&_cachedSerializedForm);                                \
+        SerializationOp(ser, CSerActionSerialize(), SER_NETWORK, PROTOCOL_VERSION);  \
     }
 
 /*

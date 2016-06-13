@@ -234,7 +234,7 @@ public:
 
     CTransaction& operator=(const CTransaction& tx);
 
-    ADD_SERIALIZE_METHODS;
+    ADD_CACHED_SERIALIZE_METHODS_OF_CONST_OBJ;
 
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
