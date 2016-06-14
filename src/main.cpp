@@ -30,6 +30,7 @@
 #include "tinyformat.h"
 #include "txdb.h"
 #include "txmempool.h"
+#include "udpnet.h"
 #include "ui_interface.h"
 #include "undo.h"
 #include "util.h"
@@ -3722,6 +3723,10 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, const CCha
         return error("%s: %s", __func__, FormatStateMessage(state));
     }
 
+    // Header is valid/has work, merkle tree and segwit merkle tree are good...RELAY NOW
+    if (!IsInitialBlockDownload())
+        UDPRelayBlock(block);
+
     int nHeight = pindex->nHeight;
 
     // Write block to history file
@@ -3802,6 +3807,9 @@ bool ProcessNewBlock(CValidationState& state, const CChainParams& chainparams, C
         if (pindex && pfrom) {
             mapBlockSource[pindex->GetBlockHash()] = std::make_pair(pfrom->GetId(), fMayBanPeerIfInvalid);
             if (fNewBlock) pfrom->nLastBlockTime = GetTime();
+
+            if (fLogIPs && fNewBlock)
+                LogPrint("bench", "Block %s provided by %s\n", pblock->GetHash().ToString(), pfrom->addr.ToString());
         }
         CheckBlockIndex(chainparams.GetConsensus());
         if (!ret)
