@@ -680,6 +680,11 @@ static bool HandleBlockMessage(UDPMessage& msg, size_t length, const CService& n
     }
 
     if (block.decoder.DecodeReady()) {
+        const bool fBench = LogAcceptCategory("bench");
+        std::chrono::steady_clock::time_point decode_start;
+        if (fBench)
+            decode_start = std::chrono::steady_clock::now();
+
         for (uint32_t i = 0; i < DIV_CEIL(block.obj_length, sizeof(UDPBlockMessage::data)); i++) {
             const void* data_ptr = block.decoder.GetDataPtr(i);
             assert(data_ptr);
@@ -703,6 +708,9 @@ static bool HandleBlockMessage(UDPMessage& msg, size_t length, const CService& n
                 assert(data_ptr != dest);
             memcpy(dest, data_ptr, sizeof(UDPBlockMessage::data));
         }
+        std::chrono::steady_clock::time_point data_copied;
+        if (fBench)
+            data_copied = std::chrono::steady_clock::now();
 
         if (block.in_header) {
             CBlockHeaderAndLengthShortTxIDs header;
@@ -713,6 +721,9 @@ static bool HandleBlockMessage(UDPMessage& msg, size_t length, const CService& n
                 LogPrintf("UDP: Failed to decode received header and short txids from %s\n", node.ToString());
                 return false;
             }
+            std::chrono::steady_clock::time_point header_deserialized;
+            if (fBench)
+                header_deserialized = std::chrono::steady_clock::now();
 
             ReadStatus decode_status = block.ProvideHeaderData(header);
             if (decode_status == READ_STATUS_INVALID) {
@@ -722,8 +733,11 @@ static bool HandleBlockMessage(UDPMessage& msg, size_t length, const CService& n
                 LogPrintf("UDP: Failed to read header and short txids from %s\n", node.ToString());
                 return true;
             }
-
-            LogPrint("udpnet", "UDP: Got full header and shorttxids from %s\n", node.ToString());
+            if (fBench) {
+                std::chrono::steady_clock::time_point header_provided(std::chrono::steady_clock::now());
+                LogPrintf("UDP: Got full header and shorttxids from %s in %lf %lf %lf ms\n", node.ToString(), to_millis_double(data_copied - decode_start), to_millis_double(header_deserialized - data_copied), to_millis_double(header_provided - header_deserialized));
+            } else
+                LogPrintf("UDP: Got full header and shorttxids from %s\n", node.ToString());
         } else
             assert(block.block_data.IsBlockAvailable());
 
@@ -734,7 +748,6 @@ static bool HandleBlockMessage(UDPMessage& msg, size_t length, const CService& n
             int64_t timeBlockRecv = 0;
             uint256 decoded_block_hash;
             CService origSender;
-            const bool fBench = LogAcceptCategory("bench");
             if (fBench) {
                 chunksProvidedByNode = block.nodesWithChunksAvailableSet;
                 timeBlockRecv = block.timeHeaderRecvd;
