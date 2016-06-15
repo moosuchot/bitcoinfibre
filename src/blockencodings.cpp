@@ -17,6 +17,9 @@
 
 #define MIN_TRANSACTION_SIZE (::GetSerializeSize(CTransaction(), SER_NETWORK, PROTOCOL_VERSION))
 
+#include <chrono>
+#define to_millis_double(t) (std::chrono::duration_cast<std::chrono::duration<double, std::chrono::milliseconds::period> >(t).count())
+
 CBlockHeaderAndShortTxIDs::CBlockHeaderAndShortTxIDs(const CBlock& block, bool fDeterministic) :
         nonce(fDeterministic ? block.GetHash().GetUint64(0) : GetRand(std::numeric_limits<uint64_t>::max())),
         shorttxids(block.vtx.size() - 1), prefilledtxn(1), header(block) {
@@ -46,8 +49,12 @@ uint64_t CBlockHeaderAndShortTxIDs::GetShortID(const uint256& txhash) const {
 }
 
 
-
 ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& cmpctblock) {
+    const bool fBench = LogAcceptCategory("bench");
+    std::chrono::steady_clock::time_point start;
+    if (fBench)
+        start = std::chrono::steady_clock::now();
+
     if (cmpctblock.header.IsNull() || (cmpctblock.shorttxids.empty() && cmpctblock.prefilledtxn.empty()))
         return READ_STATUS_INVALID;
     if (cmpctblock.shorttxids.size() + cmpctblock.prefilledtxn.size() > MAX_BLOCK_SIZE / MIN_TRANSACTION_SIZE)
@@ -74,6 +81,10 @@ ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& c
         txn_available[lastprefilledindex] = std::make_shared<CTransaction>(cmpctblock.prefilledtxn[i].tx);
     }
     prefilled_count = cmpctblock.prefilledtxn.size();
+
+    std::chrono::steady_clock::time_point prefilled_filled;
+    if (fBench)
+        prefilled_filled = std::chrono::steady_clock::now();
 
     // Calculate map of txids -> positions and check mempool to see what we have (or dont)
     // Because well-formed cmpctblock messages will have a (relatively) uniform distribution
@@ -104,6 +115,11 @@ ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& c
         return READ_STATUS_FAILED; // Short ID collision
 
     std::vector<bool> have_txn(txn_available.size());
+
+    std::chrono::steady_clock::time_point shortids_mapped;
+    if (fBench)
+        shortids_mapped = std::chrono::steady_clock::now();
+
     LOCK(pool->cs);
     const std::vector<std::pair<uint256, CTxMemPool::txiter> >& vTxHashes = pool->vTxHashes;
     for (size_t i = 0; i < vTxHashes.size(); i++) {
@@ -132,6 +148,11 @@ ReadStatus PartiallyDownloadedBlock::InitData(const CBlockHeaderAndShortTxIDs& c
         // the extra risk.
         if (mempool_count == shorttxids.size())
             break;
+    }
+
+    if (fBench) {
+        std::chrono::steady_clock::time_point finished(std::chrono::steady_clock::now());
+        LogPrintf("PartiallyDownloadedBlock::InitData took %lf %lf %lf ms\n", to_millis_double(prefilled_filled - start), to_millis_double(shortids_mapped - prefilled_filled), to_millis_double(finished - shortids_mapped));
     }
 
     LogPrint("cmpctblock", "Initialized PartiallyDownloadedBlock for block %s using a cmpctblock of size %lu\n", cmpctblock.header.GetHash().ToString(), cmpctblock.GetSerializeSize(SER_NETWORK, PROTOCOL_VERSION));
@@ -270,6 +291,11 @@ static inline uint16_t get_txlens_index(const std::map<uint16_t, uint16_t>& txn_
 }
 
 ReadStatus PartiallyDownloadedChunkBlock::InitData(const CBlockHeaderAndLengthShortTxIDs& comprblock) {
+    const bool fBench = LogAcceptCategory("bench");
+    std::chrono::steady_clock::time_point start;
+    if (fBench)
+        start = std::chrono::steady_clock::now();
+
     if (comprblock.txlens.size() != comprblock.shorttxids.size())
         return READ_STATUS_INVALID;
     ReadStatus status;
@@ -278,6 +304,10 @@ ReadStatus PartiallyDownloadedChunkBlock::InitData(const CBlockHeaderAndLengthSh
     status = PartiallyDownloadedBlock::InitData(comprblock);
     if (status != READ_STATUS_OK)
         return status;
+
+    std::chrono::steady_clock::time_point base_data_initd;
+    if (fBench)
+        base_data_initd = std::chrono::steady_clock::now();
 
     allTxnFromMempool = true;
     for (const std::shared_ptr<const CTransaction>& tx : txn_available)
@@ -288,6 +318,10 @@ ReadStatus PartiallyDownloadedChunkBlock::InitData(const CBlockHeaderAndLengthSh
     status = comprblock.FillIndexOffsetMap(index_offsets);
     if (status != READ_STATUS_OK)
         return status;
+
+    std::chrono::steady_clock::time_point index_offset_mapped;
+    if (fBench)
+        index_offset_mapped = std::chrono::steady_clock::now();
 
     int32_t prefilled_txn_offset = -1;
     for (size_t i = 0; i < comprblock.prefilledtxn.size(); i++) {
@@ -306,9 +340,18 @@ ReadStatus PartiallyDownloadedChunkBlock::InitData(const CBlockHeaderAndLengthSh
 
     fill_coding_index_offsets_it = index_offsets.begin();
 
+    std::chrono::steady_clock::time_point iterative_prepped;
+    if (fBench)
+        iterative_prepped = std::chrono::steady_clock::now();
+
     size_t firstChunkProcessed;
     while (!IsIterativeFillDone())
         DoIterativeFill(firstChunkProcessed);
+
+    if (fBench) {
+        std::chrono::steady_clock::time_point finished(std::chrono::steady_clock::now());
+        LogPrintf("PartiallyDownloadedChunkBlock::InitData took %lf %lf %lf %lf ms\n", to_millis_double(base_data_initd - start), to_millis_double(index_offset_mapped - base_data_initd), to_millis_double(iterative_prepped - index_offset_mapped), to_millis_double(finished - iterative_prepped));
+    }
 
     return READ_STATUS_OK;
 }
@@ -406,6 +449,11 @@ bool PartiallyDownloadedChunkBlock::AreChunksAvailable() const {
 }
 
 ReadStatus PartiallyDownloadedChunkBlock::GetBlock(CBlock& block) const {
+    const bool fBench = LogAcceptCategory("bench");
+    std::chrono::steady_clock::time_point start;
+    if (fBench)
+        start = std::chrono::steady_clock::now();
+
     assert(!header.IsNull());
     if (!IsBlockAvailable())
         return READ_STATUS_FAILED;
@@ -420,6 +468,10 @@ ReadStatus PartiallyDownloadedChunkBlock::GetBlock(CBlock& block) const {
     }
     if (allTxnFromMempool)
         return READ_STATUS_OK;
+
+    std::chrono::steady_clock::time_point mempool_filled;
+    if (fBench)
+        mempool_filled = std::chrono::steady_clock::now();
 
     // TODO: This is really slow (like several ms)
     // We should migrate to keeping the partially-decoded block as a unique_ptr
@@ -438,6 +490,11 @@ ReadStatus PartiallyDownloadedChunkBlock::GetBlock(CBlock& block) const {
         } catch (const std::ios_base::failure& e) {
             return READ_STATUS_FAILED; // Could be a shorttxid collision
         }
+    }
+
+    if (fBench) {
+        std::chrono::steady_clock::time_point finished(std::chrono::steady_clock::now());
+        LogPrintf("PartiallyDownloadedChunkBlock::GetBlock took %lf %lf ms\n", to_millis_double(mempool_filled - start), to_millis_double(finished - mempool_filled));
     }
 
     return READ_STATUS_OK;
