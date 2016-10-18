@@ -388,7 +388,7 @@ public:
     inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
         SerializeTransaction(*this, s, ser_action, nType, nVersion);
         if (ser_action.ForRead()) {
-            UpdateHash();
+            const_cast<uint256&>(hash).SetNull();
         }
     }
 
@@ -397,6 +397,8 @@ public:
     }
 
     const uint256& GetHash() const {
+        if (hash.IsNull())
+            UpdateHash();
         return hash;
     }
 
