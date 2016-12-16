@@ -21,7 +21,7 @@ endif
 BITCOIN_CONFIG_INCLUDES=-I$(builddir)/config
 BITCOIN_INCLUDES=-I$(builddir) -I$(builddir)/obj $(BDB_CPPFLAGS) $(BOOST_CPPFLAGS) $(LEVELDB_CPPFLAGS) $(CRYPTO_CFLAGS) $(SSL_CFLAGS)
 
-BITCOIN_INCLUDES += -I$(srcdir)/secp256k1/include
+BITCOIN_INCLUDES += -I$(srcdir)/secp256k1/include -I$(srcdir)/wh256/src
 BITCOIN_INCLUDES += $(UNIVALUE_CFLAGS)
 
 LIBBITCOIN_SERVER=libbitcoin_server.a
@@ -155,6 +155,17 @@ BITCOIN_CORE_H = \
   zmq/zmqnotificationinterface.h \
   zmq/zmqpublishnotifier.h
 
+FEC_H = \
+  wh256/src/cm256.h \
+  wh256/src/gf256.h \
+  wh256/src/wh256.h \
+  wh256/src/wirehair_codec_8.hpp
+
+FEC_CPP = \
+  wh256/src/cm256.cpp \
+  wh256/src/gf256.cpp \
+  wh256/src/wh256.cpp \
+  wh256/src/wirehair_codec_8.cpp
 
 obj/build.h: FORCE
 	@$(MKDIR_P) $(builddir)/obj
@@ -199,6 +210,8 @@ libbitcoin_server_a_SOURCES = \
   ui_interface.cpp \
   validationinterface.cpp \
   versionbits.cpp \
+  $(FEC_CPP) \
+  $(FEC_H) \
   $(BITCOIN_CORE_H)
 
 if ENABLE_ZMQ
