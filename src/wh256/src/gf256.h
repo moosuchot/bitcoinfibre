@@ -31,6 +31,8 @@
 
 #include <stdint.h> // uint32_t etc
 #include <string.h> // memcpy, memset
+#include <assert.h> // static_assert (C11)
+#include <stddef.h> // max_align_t, etc
 
 // Library version
 #define GF256_VERSION 2
@@ -44,10 +46,20 @@
 //
 // Edit these to port to your architecture
 
-#ifdef _MSC_VER
+// Compiler-specific SSE headers (at least modern gcc and MSVC have these)
+#pragma GCC target("avx2")
+#include <tmmintrin.h> // SSE3: _mm_shuffle_epi8
+#include <emmintrin.h> // SSE2
+#include <immintrin.h> // SSE2
 
-    // Compiler-specific 128-bit SIMD register keyword
-    #define GF256_M128 __m128i
+
+// Compiler-specific 128-bit SIMD register keyword
+#define GF256_M128 __m128i
+
+
+#define GF256_RESTRICT
+#define GF256_FORCE_INLINE inline
+/*#ifdef _MSC_VER
 
     // Compiler-specific C++11 restrict keyword
     #define GF256_RESTRICT __restrict
@@ -55,23 +67,23 @@
     // Compiler-specific force inline keyword
     #define GF256_FORCE_INLINE __forceinline
 
-    // Compiler-specific alignment keyword
-    #define GF256_ALIGNED __declspec(align(16))
-
-    // Compiler-specific SSE headers
-    #include <tmmintrin.h> // SSE3: _mm_shuffle_epi8
-    #include <emmintrin.h> // SSE2
-
 #else
 
     #error "Compiler unsupported : Add support here."
 
-#endif
+#endif*/
 
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+//-----------------------------------------------------------------------------
+// Useful Macros (C11)
+//
+
+static_assert(alignof(max_align_t) >= 16, "Need to be able to align to 16-byte boundaries, at least");
+#define GF256_ALIGNED alignas(16)
 
 
 //-----------------------------------------------------------------------------
