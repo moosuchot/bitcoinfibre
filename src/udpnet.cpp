@@ -1504,8 +1504,12 @@ void OpenPersistentUDPConnectionTo(const CService& addr, uint64_t local_magic, u
 
 void CloseUDPConnectionTo(const CService& addr) {
     std::unique_lock<std::recursive_mutex> lock(cs_mapUDPNodes);
-    auto it = mapUDPNodes.find(addr);
-    if (it == mapUDPNodes.end())
+    auto it = mapPersistentNodes.find(addr);
+    if (it != mapPersistentNodes.end())
+        mapPersistentNodes.erase(it);
+
+    auto it2 = mapUDPNodes.find(addr);
+    if (it2 == mapUDPNodes.end())
         return;
-    DisconnectNode(it);
+    DisconnectNode(it2);
 }
