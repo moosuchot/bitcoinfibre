@@ -122,7 +122,7 @@ UniValue disconnectudpnode(const UniValue& params, bool fHelp)
     string strCommand;
     if (fHelp || params.size() != 1)
         throw runtime_error(
-            "addudpnode \"node\"\n"
+            "disconnectudpnode \"node\"\n"
             "\nDisconnects a connected UDP node.\n"
             "\nArguments:\n"
             "1. \"node\"                (string, required)  The node IP:port\n"
