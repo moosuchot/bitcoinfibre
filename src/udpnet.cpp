@@ -42,6 +42,10 @@ std::map<CService, UDPConnectionState> mapUDPNodes;
 static std::map<int64_t, std::tuple<CService, uint64_t, size_t> > nodesToRepeatDisconnect;
 static std::map<CService, UDPConnectionInfo> mapPersistentNodes;
 
+static CService LOCAL_WRITE_DEVICE_SERVICE(CNetAddr(), 1);
+static CService LOCAL_READ_DEVICE_SERVICE(CNetAddr(), 2);
+
+static const unsigned char LOCAL_MAGIC_BYTES[] = { 0x7b, 0xad, 0xca, 0xfe }; // TODO: Pick something smarter
 
 //TODO: Switch to something faster than SHA256 for checksums
 static void FillChecksum(uint64_t magic, UDPMessage& msg, const unsigned int length) {
@@ -73,15 +77,22 @@ static struct timeval timer_interval;
 
 static void ThreadRunReadEventLoop() { event_base_dispatch(event_base_read); }
 static void do_send_messages(size_t group);
+static void do_write_local_messages();
+static void do_read_local_messages();
+static std::atomic_bool local_read_messages_break(false);
 static void send_messages_flush_and_break();
-static void send_messages_init(const std::vector<std::pair<unsigned short, uint64_t> >& group_list);
+static void send_messages_init(const std::vector<std::pair<unsigned short, uint64_t> >& group_list, bool fIncludeLocalSend);
 static void ThreadRunWriteEventLoop(size_t group) { do_send_messages(group); }
+static void ThreadRunLocalWriteEventLoop() { do_write_local_messages(); }
+static void ThreadRunLocalReadEventLoop() { do_read_local_messages(); }
 
 static void read_socket_func(evutil_socket_t fd, short event, void* arg);
 static void timer_func(evutil_socket_t fd, short event, void* arg);
 
-static boost::thread *udp_read_thread = NULL;
+static boost::thread *udp_read_thread = NULL, *udp_local_read_thread = NULL;
 static std::vector<boost::thread> udp_write_threads;
+
+static void OpenLocalDeviceConnection(bool fWrite);
 
 static void AddConnectionFromString(const std::string& node, bool fTrust) {
     size_t host_port_end = node.find(',');
@@ -145,7 +156,6 @@ static void CloseSocketsAndReadEvents() {
 
 bool InitializeUDPConnections() {
     assert(udp_write_threads.empty() && !udp_read_thread);
-    assert(GetUDPInboundPorts().size());
 
     const std::vector<std::pair<unsigned short, uint64_t> > group_list(GetUDPInboundPorts());
     for (std::pair<unsigned short, uint64_t> port : group_list) {
@@ -199,13 +209,23 @@ bool InitializeUDPConnections() {
     timer_interval.tv_usec = 500*1000;
     evtimer_add(timer_event, &timer_interval);
 
-    send_messages_init(group_list);
+    send_messages_init(group_list, IsArgSet("-fecwritedevice"));
     for (size_t i = 0; i < udp_socks.size(); i++) {
         boost::function<void ()> f(boost::bind(&ThreadRunWriteEventLoop, i));
         udp_write_threads.emplace_back(boost::bind(&TraceThread<boost::function<void ()> >, "udpwrite", f));
     }
 
+    if (IsArgSet("-fecwritedevice")) {
+        OpenLocalDeviceConnection(true);
+        udp_write_threads.emplace_back(boost::bind(&TraceThread<boost::function<void ()> >, "udpwritelocal", &ThreadRunLocalWriteEventLoop));
+    }
+
     AddConfAddedConnections();
+
+    if (IsArgSet("-fecreaddevice")) {
+        OpenLocalDeviceConnection(false);
+        udp_local_read_thread = new boost::thread(boost::bind(&TraceThread<void (*)()>, "udpreadlocal", &ThreadRunLocalReadEventLoop));
+    }
 
     BlockRecvInit();
 
@@ -221,6 +241,12 @@ void StopUDPConnections() {
     event_base_loopbreak(event_base_read);
     udp_read_thread->join();
     delete udp_read_thread;
+
+    local_read_messages_break = true;
+    if (udp_local_read_thread) {
+        udp_local_read_thread->join();
+        delete udp_local_read_thread;
+    }
 
     BlockRecvShutdown();
 
@@ -379,6 +405,89 @@ static void read_socket_func(evutil_socket_t fd, short event, void* arg) {
     }
 }
 
+static bool read_local_bytes(int fd, unsigned char* buf, size_t num) {
+    fd_set read_set;
+    struct timeval timeout;
+    do {
+        FD_ZERO(&read_set);
+        FD_SET(fd, &read_set);
+        timeout.tv_sec = 0; timeout.tv_usec = 50 * 1000;
+        int res = select(fd + 1, &read_set, NULL, NULL, &timeout);
+        if (res > 0) {
+            ssize_t read_res = read(fd, buf, num);
+            if (read_res <= 0) return false;
+            buf += (size_t)read_res; num -= (size_t)read_res;
+            if (num == 0) return true;
+            continue;
+        }
+        if (res != 0) return false;
+    } while (!local_read_messages_break);
+    return false;
+}
+
+static void do_read_local_messages() {
+    std::string localUDPReadDevice(GetArg("-fecreaddevice", ""));
+    assert(localUDPReadDevice != "");
+
+    do {
+        int fd = open(localUDPReadDevice.c_str(), O_RDONLY);
+        assert(fd >= 0 && "Failed to open -fecreaddevice, please try again");
+        assert(fd <= FD_SETSIZE && "Failed to open -fecreaddevice, please try again");
+
+        while (true) {
+            // Scan forward until we find magic bytes
+            for (ssize_t i = 0; i < (ssize_t)sizeof(LOCAL_MAGIC_BYTES); i++) {
+                unsigned char c;
+                if (!read_local_bytes(fd, &c, 1))
+                    break;
+                if (LOCAL_MAGIC_BYTES[i] != c) {
+                    i = -1;
+                    continue;
+                }
+            }
+
+            UDPMessage msg;
+            // UDPMessage is 1 byte larger than block messages
+            if (!read_local_bytes(fd, (unsigned char*)&msg, sizeof(UDPMessage) - 1))
+                break;
+
+            const bool fBench = LogAcceptCategory("bench");
+            std::chrono::steady_clock::time_point start;
+            if (fBench)
+                start = std::chrono::steady_clock::now();
+
+            std::unique_lock<std::recursive_mutex> lock(cs_mapUDPNodes);
+            std::map<CService, UDPConnectionState>::iterator it = mapUDPNodes.find(LOCAL_READ_DEVICE_SERVICE);
+            if (it == mapUDPNodes.end())
+                continue; // We lost our local node - it'll come back when we reconnect
+            if (!CheckChecksum(it->second.connection.local_magic, msg, sizeof(UDPMessage) - 1))
+                continue;
+
+            UDPConnectionState& state = it->second;
+
+            state.lastRecvTime = GetTimeMillis();
+
+            if (msg.header.msg_type == MSG_TYPE_BLOCK_HEADER || msg.header.msg_type == MSG_TYPE_BLOCK_CONTENTS) {
+                if (!HandleBlockMessage(msg, sizeof(UDPMessage) - 1, it->first, it->second)) {
+                    send_and_disconnect(it);
+                    continue;
+                }
+            } else {
+                // Huh? Only supposed to get block messages
+                continue;
+            }
+
+            if (fBench) {
+                std::chrono::steady_clock::time_point finish(std::chrono::steady_clock::now());
+                if (to_millis_double(finish - start) > 1)
+                    LogPrintf("UDP: Packet took %lf ms to process\n", to_millis_double(finish - start));
+            }
+        }
+
+        close(fd);
+    } while (!local_read_messages_break);
+}
+
 static void OpenUDPConnectionTo(const CService& addr, const UDPConnectionInfo& info);
 static void timer_func(evutil_socket_t fd, short event, void* arg) {
     ProcessDownloadTimerEvents();
@@ -399,6 +508,11 @@ static void timer_func(evutil_socket_t fd, short event, void* arg) {
 
     for (std::map<CService, UDPConnectionState>::iterator it = mapUDPNodes.begin(); it != mapUDPNodes.end();) {
         boost::this_thread::interruption_point();
+
+        if (it->first == LOCAL_WRITE_DEVICE_SERVICE || it->first == LOCAL_READ_DEVICE_SERVICE) {
+            it++;
+            continue;
+        }
 
         UDPConnectionState& state = it->second;
 
@@ -470,9 +584,15 @@ struct PerGroupMessageQueue {
     PerGroupMessageQueue(PerGroupMessageQueue&& q) { assert(false); }
 };
 static std::vector<PerGroupMessageQueue> messageQueues;
+static const size_t LOCAL_RECEIVE_GROUP = (size_t)-1;
+static size_t LOCAL_SEND_GROUP = (size_t)-1;
 
 void SendMessage(const UDPMessage& msg, const unsigned int length, const CService& service, const uint64_t magic, size_t group) {
     assert(length <= sizeof(UDPMessage));
+
+    if (group == LOCAL_RECEIVE_GROUP)
+        return;
+
     assert(group < messageQueues.size());
     PerGroupMessageQueue& queue = messageQueues[group];
 
@@ -540,10 +660,54 @@ static void do_send_messages(size_t group) {
     }
 }
 
-static void send_messages_init(const std::vector<std::pair<unsigned short, uint64_t> >& group_list) {
-    messageQueues.resize(group_list.size());
+static void do_write_local_messages() {
+    PerGroupMessageQueue& queue = messageQueues[messageQueues.size() - 1];
+    std::string localUDPWriteDevice(GetArg("-fecwritedevice", ""));
+    assert(localUDPWriteDevice != "");
+
+    int fd = open(localUDPWriteDevice.c_str(), O_WRONLY);
+    assert(fd && "Failed to open -fecwritedevice, please try again");
+
+    while (true) {
+        if (queue.nextUndefinedMessage == queue.nextPendingMessage) {
+            std::unique_lock<std::mutex> lock(queue.send_messages_mutex);
+            while (queue.nextUndefinedMessage == queue.nextPendingMessage && !send_messages_break)
+                queue.send_messages_wake_cv.wait(lock);
+        }
+        if (send_messages_break)
+            return;
+
+        std::tuple<CService, UDPMessage, unsigned int, uint64_t>& msg = queue.messagesPendingRingBuff[queue.nextPendingMessage];
+
+        if (std::get<1>(msg).header.msg_type != MSG_TYPE_BLOCK_HEADER &&
+                std::get<1>(msg).header.msg_type != MSG_TYPE_BLOCK_CONTENTS) {
+            LogPrintf("UDP: Something tried to send non-block to local write!\n");
+            continue;
+        }
+
+        assert(std::get<2>(msg) == sizeof(UDPMessage) - 1); // UDPMessage is 1 byte larger than block messages
+
+        FillChecksum(std::get<3>(msg), std::get<1>(msg), std::get<2>(msg));
+
+        if (write(fd, &LOCAL_MAGIC_BYTES, sizeof(LOCAL_MAGIC_BYTES)) != sizeof(LOCAL_MAGIC_BYTES) ||
+                write(fd, &std::get<1>(msg), std::get<2>(msg)) != std::get<2>(msg)) {
+            //TODO: Handle?
+        }
+
+        queue.nextPendingMessage = (queue.nextPendingMessage + 1) % PENDING_MESSAGES_BUFF_SIZE;
+    }
+
+    close(fd);
+}
+
+static void send_messages_init(const std::vector<std::pair<unsigned short, uint64_t> >& group_list, bool fIncludeLocalSend) {
+    messageQueues.resize(group_list.size() + fIncludeLocalSend);
     for (size_t i = 0; i < group_list.size(); i++)
         messageQueues[i].bw = group_list[i].second;
+    if (fIncludeLocalSend) {
+        LOCAL_SEND_GROUP = group_list.size();
+        messageQueues[LOCAL_SEND_GROUP].bw = 1;
+    }
 }
 
 static void send_messages_flush_and_break() {
@@ -627,7 +791,7 @@ void GetUDPConnectionList(std::vector<UDPConnectionStats>& connections_list) {
 
 static void OpenUDPConnectionTo(const CService& addr, const UDPConnectionInfo& info) {
     std::unique_lock<std::recursive_mutex> lock(cs_mapUDPNodes);
-    assert(info.group < GetUDPInboundPorts().size());
+    assert(info.group < messageQueues.size() || addr == LOCAL_READ_DEVICE_SERVICE);
 
     std::pair<std::map<CService, UDPConnectionState>::iterator, bool> res = mapUDPNodes.insert(std::make_pair(addr, UDPConnectionState()));
     if (!res.second) {
@@ -635,13 +799,21 @@ static void OpenUDPConnectionTo(const CService& addr, const UDPConnectionInfo& i
         res = mapUDPNodes.insert(std::make_pair(addr, UDPConnectionState()));
     }
 
+    bool fIsLocal = (addr == LOCAL_WRITE_DEVICE_SERVICE || addr == LOCAL_READ_DEVICE_SERVICE);
+
     LogPrint("udpnet", "UDP: Initializing connection to %s...\n", addr.ToString());
 
     UDPConnectionState& state = res.first->second;
     state.connection = info;
-    state.state = STATE_INIT;
+    state.state = fIsLocal ? STATE_INIT_COMPLETE : STATE_INIT;
     state.lastSendTime = 0;
     state.lastRecvTime = GetTimeMillis();
+
+    if (fIsLocal) {
+        for (size_t i = 0; i < sizeof(state.last_pings) / sizeof(double); i++) {
+            state.last_pings[i] = 0;
+        }
+    }
 }
 
 void OpenUDPConnectionTo(const CService& addr, uint64_t local_magic, uint64_t remote_magic, bool fUltimatelyTrusted, size_t group) {
@@ -669,4 +841,9 @@ void CloseUDPConnectionTo(const CService& addr) {
     if (it2 == mapUDPNodes.end())
         return;
     DisconnectNode(it2);
+}
+
+static void OpenLocalDeviceConnection(bool fWrite) {
+    const CService& service = fWrite ? LOCAL_WRITE_DEVICE_SERVICE : LOCAL_READ_DEVICE_SERVICE;
+    OpenPersistentUDPConnectionTo(service, htole64(0xdeadbeef), htole64(0xdeadbeef), false, fWrite ? LOCAL_SEND_GROUP : LOCAL_RECEIVE_GROUP);
 }
