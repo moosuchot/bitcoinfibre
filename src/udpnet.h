@@ -63,6 +63,7 @@ struct UDPConnectionInfo {
     uint64_t remote_magic; // Already LE
     size_t group;
     bool fTrusted;
+    UDPConnectionType connection_type;
 };
 
 struct UDPConnectionState {
