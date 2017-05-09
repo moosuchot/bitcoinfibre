@@ -690,7 +690,9 @@ static void do_send_messages(size_t group) {
 
 static std::pair<int64_t, std::string> get_local_device() {
     std::string localUDPWriteDevice(GetArg("-fecwritedevice", ""));
-    assert(localUDPWriteDevice != "");
+
+    if (localUDPWriteDevice == "")
+        return std::make_pair((int64_t)0, std::string());
 
     size_t bw_end = localUDPWriteDevice.find(',');
     if (bw_end == std::string::npos) {
