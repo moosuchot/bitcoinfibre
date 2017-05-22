@@ -38,10 +38,9 @@ private:
     std::vector<value_type> table;
     size_type count = 0, scan_max;
 
-    inline size_t hash_pos(uint64_t hash, size_t i) {
-        uint64_t input = hash * (i + 1);
-        uint32_t value = (input & 0xffffffffffLLU) ^ ((input & 0xffff00000000LLU) >> 16) ^ ((input & 0xffff000000000000LLU) >> 32);
-        return value & ((size_type(1) << bits)-1);
+    /* Hash should be uniform already. */
+    inline size_t hash_base(uint64_t hash) {
+        return hash & ((size_type(1) << bits)-1);
     }
 
     // Power of 2 which keeps us under 25 full.
@@ -60,14 +59,14 @@ public:
     {}
 
     std::pair<iterator, bool> insert(const value_type& value) {
-        size_t pos;
+        size_t pos = hash_base(hash_instance(value));
         size_t i = 0;
         while (i < scan_max) {
-            pos = hash_pos(hash_instance(value), i);
             if (null_instance(table[pos]))
                break;
             if (equal_instance(table[pos], value))
                break;
+            pos = (pos + 1)  & ((size_type(1) << bits)-1);
             i++;
         }
 
@@ -84,14 +83,14 @@ public:
     }
 
     iterator find(const value_type& value) {
-        size_t pos;
+        size_t pos = hash_base(hash_instance(value));
         size_t i = 0;
         while (i < scan_max) {
-            pos = hash_pos(hash_instance(value), i);
             if (null_instance(table[pos]))
                break;
             if (equal_instance(table[pos], value))
                break;
+            pos = (pos + 1)  & ((size_type(1) << bits)-1);
             i++;
         }
 
