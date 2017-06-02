@@ -284,7 +284,8 @@ CBlockHeaderAndLengthShortTxIDs::CBlockHeaderAndLengthShortTxIDs(const CBlock& b
     }
 }
 
-ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(std::map<size_t, size_t>& index_offsets) const {
+template<typename F>
+ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(F& callback) const {
     if (txlens.size() != shorttxids.size())
         return READ_STATUS_INVALID;
 
@@ -305,7 +306,7 @@ ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(std::map<size_t, 
     size_t current_index = 0;
     while (!indexes_left.empty()) {
         std::multimap<size_t, size_t>::reverse_iterator lastit = indexes_left.rbegin();
-        index_offsets[current_index] = lastit->second;
+        callback(current_index, lastit->second);
         current_index += lastit->first;
         lastit++; // base() returns next (ie prev of reverse) element
         indexes_left.erase(lastit.base());
@@ -315,7 +316,7 @@ ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(std::map<size_t, 
             std::multimap<size_t, size_t>::iterator it = indexes_left.upper_bound(size_left);
             assert(it != indexes_left.begin()); it--; assert(it->first <= size_left);
 
-            index_offsets[current_index] = it->second;
+            callback(current_index, it->second);
             current_index += it->first;
             size_left -= it->first;
             indexes_left.erase(it);
@@ -331,18 +332,23 @@ ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(std::map<size_t, 
 
 #define DIV_CEIL(a, b) (((a) + (b) - 1) / (b))
 
-ChunkCodedBlock::ChunkCodedBlock(const CBlock& block, const CBlockHeaderAndLengthShortTxIDs& headerAndIDs) {
-    std::map<size_t, size_t> index_offsets;
-    assert(headerAndIDs.FillIndexOffsetMap(index_offsets) == READ_STATUS_OK);
+struct FillIndexOffsetMapSerializer {
+    VectorOutputStream& stream;
+    const CBlock& block;
+    void operator()(size_t offset, size_t index) {
+        if (stream.pos() < offset)
+            stream.skip_bytes(offset - stream.pos());
+        assert(stream.pos() == offset);
+        stream << TransactionCompressor(const_cast<CTransactionRef&>(block.vtx[index]));
+    }
+};
 
+ChunkCodedBlock::ChunkCodedBlock(const CBlock& block, const CBlockHeaderAndLengthShortTxIDs& headerAndIDs) {
     codedBlock.reserve(MAX_BLOCK_SERIALIZED_SIZE * 1.2);
     VectorOutputStream stream(&codedBlock, SER_NETWORK, PROTOCOL_VERSION);
-    for (std::map<size_t, size_t>::iterator it = index_offsets.begin(); it != index_offsets.end(); it++) {
-        if (stream.pos() < it->first)
-            stream.skip_bytes(it->first - stream.pos());
-        assert(stream.pos() == it->first);
-        stream << TransactionCompressor(const_cast<CTransactionRef&>(block.vtx[it->second]));
-    }
+    FillIndexOffsetMapSerializer ser{stream, block};
+
+    assert(headerAndIDs.FillIndexOffsetMap<FillIndexOffsetMapSerializer>(ser) == READ_STATUS_OK);
     codedBlock.resize(DIV_CEIL(codedBlock.size(), FEC_CHUNK_SIZE) * FEC_CHUNK_SIZE);
 }
 
@@ -355,6 +361,12 @@ static inline uint16_t get_txlens_index(const std::map<uint16_t, uint16_t>& txn_
     return real_index - it->second;
 }
 
+struct FillIndexOffsetMapCallback {
+    std::map<size_t, size_t>& index_offsets;
+    void operator()(size_t offset, size_t index) {
+        index_offsets[offset] = index;
+    }
+};
 ReadStatus PartiallyDownloadedChunkBlock::InitData(const CBlockHeaderAndLengthShortTxIDs& comprblock, const std::vector<std::pair<uint256, CTransactionRef>>& extra_txn) {
     const bool fBench = LogAcceptCategory("bench");
     std::chrono::steady_clock::time_point start;
@@ -383,7 +395,8 @@ ReadStatus PartiallyDownloadedChunkBlock::InitData(const CBlockHeaderAndLengthSh
     if (allTxnFromMempool)
         return READ_STATUS_OK;
 
-    status = comprblock.FillIndexOffsetMap(index_offsets);
+    FillIndexOffsetMapCallback fiomCallback{index_offsets};
+    status = comprblock.FillIndexOffsetMap<FillIndexOffsetMapCallback>(fiomCallback);
     if (status != READ_STATUS_OK)
         return status;
 
