@@ -243,6 +243,7 @@ static void FECBlockRTTTest0500(benchmark::State& state) { RealFECedBlockRoundTr
 static void FECBlockRTTTest1000(benchmark::State& state) { RealFECedBlockRoundTripTest(state, 1000); }
 static void FECBlockRTTTest1500(benchmark::State& state) { RealFECedBlockRoundTripTest(state, 1500); }
 static void FECBlockRTTTest1550(benchmark::State& state) { RealFECedBlockRoundTripTest(state, 1550); }
+static void FECBlockRTTTest1555(benchmark::State& state) { RealFECedBlockRoundTripTest(state, 1555); }
 
 static void FECHeaderRTTTest1550(benchmark::State& state) { RealFECedBlockRoundTripTest(state, 1550, false); }
 
@@ -251,5 +252,6 @@ BENCHMARK(FECBlockRTTTest0500);
 BENCHMARK(FECBlockRTTTest1000);
 BENCHMARK(FECBlockRTTTest1500);
 BENCHMARK(FECBlockRTTTest1550);
+BENCHMARK(FECBlockRTTTest1555);
 
 BENCHMARK(FECHeaderRTTTest1550);
