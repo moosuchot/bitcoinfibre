@@ -289,6 +289,26 @@ ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(F& callback) cons
     if (txlens.size() != shorttxids.size())
         return READ_STATUS_INVALID;
 
+    // The first version is much faster, but for a 0.5-1ms hit, the second
+    // version is much smarter about avoiding crossing chunk boundaries.
+#if 1
+    size_t current_index = 0;
+    int32_t lastprefilledindex = -1;
+    uint16_t index_offset = 0;
+    std::vector<PrefilledTransaction>::const_iterator prefilledit = prefilledtxn.begin();
+    for (size_t i = 0; i < txlens.size(); i++) {
+        while (prefilledit != prefilledtxn.end() &&
+                (uint32_t)(lastprefilledindex + prefilledit->index + 1) == i + index_offset) {
+            lastprefilledindex += prefilledit->index + 1;
+            prefilledit++;
+            index_offset++;
+        }
+        callback(current_index, i + index_offset);
+        current_index += txlens[i];
+    }
+
+    return READ_STATUS_OK;
+#else
     std::multimap<size_t, size_t> indexes_left; // size -> index
     int32_t lastprefilledindex = -1;
     uint16_t index_offset = 0;
@@ -327,6 +347,7 @@ ReadStatus CBlockHeaderAndLengthShortTxIDs::FillIndexOffsetMap(F& callback) cons
     }
 
     return READ_STATUS_OK;
+#endif
 }
 
 
