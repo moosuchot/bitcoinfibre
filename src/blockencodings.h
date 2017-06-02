@@ -222,7 +222,8 @@ public:
 
     // Fills a map from offset within a FEC-coded block to the tx index in the block
     // Returns false if this object is invalid (txlens.size() != shortxids.size())
-    ReadStatus FillIndexOffsetMap(std::map<size_t, size_t>& index_offsets) const;
+    template<typename F>
+    ReadStatus FillIndexOffsetMap(F& callback) const;
 
     ADD_SERIALIZE_METHODS;
 
