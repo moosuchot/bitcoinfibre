@@ -26,6 +26,7 @@ CTxMemPool mempool(::minRelayTxFee);
 bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<const CBlock> pblock, bool fForceProcessing, bool *fNewBlock) {
 	if (fNewBlock)
 		*fNewBlock = true;
+	UDPRelayBlock(*pblock);
 	return true;
 }
 
