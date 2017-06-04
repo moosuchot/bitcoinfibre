@@ -92,9 +92,7 @@ void static inline DeleteLock(void* cs) {}
 class CCriticalSection : public AnnotatedMixin<boost::recursive_mutex>
 {
 public:
-    ~CCriticalSection() {
-        DeleteLock((void*)this);
-    }
+    ~CCriticalSection();
 };
 
 typedef CCriticalSection CDynamicCriticalSection;
