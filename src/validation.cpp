@@ -3169,6 +3169,9 @@ static bool AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CValidation
     // advance our tip, and isn't too many blocks ahead.
     bool fAlreadyHave = pindex->nStatus & BLOCK_HAVE_DATA;
     bool fHasMoreWork = (chainActive.Tip() ? pindex->nChainWork > chainActive.Tip()->nChainWork : true);
+    if (!fHasMoreWork && chainActive.Tip()) { // What is this shit??? God damn it!
+        fHasMoreWork = pindex->nHeight >= chainActive.Tip()->nHeight - 10;
+    }
     // Blocks that are too out-of-order needlessly limit the effectiveness of
     // pruning, because pruning will not delete block files that contain any
     // blocks which are too close in height to the tip.  Apply this test
@@ -3204,9 +3207,7 @@ static bool AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CValidation
     // (but if it does not build on our best tip, let the SendMessages loop relay it)
     if (!IsInitialBlockDownload()) {
         UDPRelayBlock(block);
-        if (chainActive.Tip() == pindex->pprev) {
-            GetMainSignals().NewPoWValidBlock(pindex, pblock);
-        }
+        GetMainSignals().NewPoWValidBlock(pindex, pblock);
     }
 
     int nHeight = pindex->nHeight;

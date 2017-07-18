@@ -784,14 +784,15 @@ void PeerLogicValidation::NewPoWValidBlock(const CBlockIndex *pindex, const std:
     LOCK(cs_main);
 
     static int nHighestFastAnnounce = 0;
-    if (pindex->nHeight <= nHighestFastAnnounce)
+    if (pindex->nHeight <= nHighestFastAnnounce - 10) // Dear god, what has though brought upon me
         return;
-    nHighestFastAnnounce = pindex->nHeight;
+    bool fMaybeBestTip = pindex->nHeight > nHighestFastAnnounce;
+    nHighestFastAnnounce = std::max(nHighestFastAnnounce, pindex->nHeight);
 
     bool fWitnessEnabled = IsWitnessEnabled(pindex->pprev, Params().GetConsensus());
     uint256 hashBlock(pblock->GetHash());
 
-    {
+    if (fMaybeBestTip) {
         LOCK(cs_most_recent_block);
         most_recent_block_hash = hashBlock;
         most_recent_block = pblock;
@@ -806,9 +807,13 @@ void PeerLogicValidation::NewPoWValidBlock(const CBlockIndex *pindex, const std:
         CNodeState &state = *State(pnode->GetId());
         // If the peer has, or we announced to them the previous block already,
         // but we don't think they have this one, go ahead and announce it
-        if (state.fPreferHeaderAndIDs && (!fWitnessEnabled || state.fWantsCmpctWitness) &&
-                !PeerHasHeader(&state, pindex) && PeerHasHeader(&state, pindex->pprev)) {
-
+        bool fDefinitelyDontRelay = PeerHasHeader(&state, pindex) || !PeerHasHeader(&state, pindex->pprev) ||
+                                    pnode->nVersion < INVALID_CB_NO_BAN_VERSION;
+        bool fDoFastRelay = state.fPreferHeaderAndIDs && (!fWitnessEnabled || state.fWantsCmpctWitness);
+        // TODO: Undo this garbage - fast announce everything to everyone to fix the astounding
+        // level of brokenness of current mining consensus logic
+        bool fOtherwiseFastRelay = state.fProvidesHeaderAndIDs && state.fWantsCmpctWitness; //Maybe 2x garbage?
+        if (!fDefinitelyDontRelay && (fDoFastRelay || fOtherwiseFastRelay)) {
             LogPrint("net", "%s sending header-and-ids %s to peer=%d\n", "PeerLogicValidation::NewPoWValidBlock",
                     hashBlock.ToString(), pnode->id);
             connman->PushMessage(pnode, msgMaker.Make(NetMsgType::CMPCTBLOCK, *pcmpctblock));
@@ -816,10 +821,12 @@ void PeerLogicValidation::NewPoWValidBlock(const CBlockIndex *pindex, const std:
         }
     });
 
-    connman->ForEachNode([this, &pblock, &msgMaker, fWitnessEnabled](CNode* pnode) {
-        if (!fWitnessEnabled && pnode->strSubVer == "/RelayNetworkServer:42/")
-            connman->PushMessage(pnode, msgMaker.Make(SERIALIZE_TRANSACTION_NO_WITNESS, NetMsgType::BLOCK, *pblock));
-    });
+    if (fMaybeBestTip) {
+        connman->ForEachNode([this, &pblock, &msgMaker, fWitnessEnabled](CNode* pnode) {
+            if (!fWitnessEnabled && pnode->strSubVer == "/RelayNetworkServer:42/")
+                connman->PushMessage(pnode, msgMaker.Make(SERIALIZE_TRANSACTION_NO_WITNESS, NetMsgType::BLOCK, *pblock));
+        });
+    }
 }
 
 void PeerLogicValidation::UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload) {
@@ -2025,7 +2032,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         if (pindex->nChainWork <= chainActive.Tip()->nChainWork || // We know something better
                 pindex->nTx != 0) { // We had this block at some point, but pruned it
-            if (fAlreadyInFlight) {
+            if (fAlreadyInFlight || pindex->nHeight >= chainActive.Tip->nHeight - 10) {
                 // We requested this block for some reason, but our mempool will probably be useless
                 // so we just grab the block via normal getdata
                 std::vector<CInv> vInv(1);
@@ -2329,7 +2336,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         bool fCanDirectFetch = CanDirectFetch(chainparams.GetConsensus());
         // If this set of headers is valid and ends in a block with at least as
         // much work as our tip, download as much as possible.
-        if (fCanDirectFetch && pindexLast->IsValid(BLOCK_VALID_TREE) && chainActive.Tip()->nChainWork <= pindexLast->nChainWork) {
+        if (fCanDirectFetch && pindexLast->IsValid(BLOCK_VALID_TREE) && (chainActive.Tip()->nChainWork <= pindexLast->nChainWork) || pindexLast->nHeight >= chainActive.Tip()->nHeight - 10) {
             std::vector<const CBlockIndex*> vToFetch;
             const CBlockIndex *pindexWalk = pindexLast;
             // Calculate all the blocks we'd need to switch to pindexLast, up to a limit.
