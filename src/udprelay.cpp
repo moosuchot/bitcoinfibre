@@ -8,6 +8,7 @@
 #include "util.h"
 #include "streams.h"
 #include "validation.h"
+#include "net.h"
 #include "version.h"
 
 #include <condition_variable>
@@ -16,6 +17,9 @@
 #include <boost/thread.hpp>
 
 #define to_millis_double(t) (std::chrono::duration_cast<std::chrono::duration<double, std::chrono::milliseconds::period> >(t).count())
+
+
+void MaybeReceiveUselessBlock(const std::shared_ptr<const CBlock>& pblock, CConnman& connman, CNode* pfrom); // In net_processing
 
 static CService TRUSTED_PEER_DUMMY;
 static std::map<std::pair<uint64_t, CService>, std::shared_ptr<PartialBlockData> > mapPartialBlocks;
@@ -533,6 +537,9 @@ static void ProcessBlockThread() {
                     RemovePartialBlock(process_block.first);
                     continue; // Probably a tx collision generating merkle-tree errors
                 }
+
+                MaybeReceiveUselessBlock(pdecoded_block, *g_connman.get(), nullptr);
+
                 if (fNewBlock && fBench) {
                     LogPrintf(debug_string);
                     LogPrintf("UDP: Final block processing for %s took %lf %lf %lf %lf ms\n", decoded_block.GetHash().ToString(), to_millis_double(fec_reconstruct_finished - reconstruct_start), to_millis_double(block_finalized - fec_reconstruct_finished), to_millis_double(process_start - block_finalized), to_millis_double(std::chrono::steady_clock::now() - process_start));

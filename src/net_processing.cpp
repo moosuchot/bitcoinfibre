@@ -29,6 +29,7 @@
 #include "utilmoneystr.h"
 #include "utilstrencodings.h"
 #include "validationinterface.h"
+#include "udpapi.h"
 
 #include <boost/thread.hpp>
 
@@ -122,6 +123,10 @@ namespace {
     MapRelay mapRelay;
     /** Expiration-time ordered list of (expire time, relay map entry) pairs, protected by cs_main). */
     std::deque<std::pair<int64_t, MapRelay::iterator>> vRelayExpiration;
+
+    CCriticalSection cs_fucking_dirty_hacks;
+    std::vector<std::shared_ptr<const CBlock>> some_useless_blocks(20);
+    std::set<const CBlockIndex*> useless_block_index_ptrs;
 } // anon namespace
 
 //////////////////////////////////////////////////////////////////////////////
@@ -776,6 +781,41 @@ static std::shared_ptr<const CBlock> most_recent_block;
 static std::shared_ptr<const CBlockHeaderAndShortTxIDs> most_recent_compact_block;
 static uint256 most_recent_block_hash;
 
+void AnnounceCMPCT(const CBlockIndex *pindex, const std::shared_ptr<const CBlock> pblock, CConnman* connman) {
+    LOCK(cs_main);
+    CBlockHeaderAndShortTxIDs cmpct(*pblock, true);
+    const CNetMsgMaker msgMaker(PROTOCOL_VERSION);
+
+    bool fWitnessEnabled = IsWitnessEnabled(pindex->pprev, Params().GetConsensus());
+    if (fWitnessEnabled) // NO FUCKING BIP 91!!!!!!!!!
+        return;
+
+    if (!pindex->pprev || !pindex->pprev->pprev || !pindex->pprev->pprev->pprev || !pindex->pprev->pprev->pprev->pprev || !pindex->pprev->pprev->pprev->pprev->pprev)
+        return;
+
+    uint256 hashBlock(pblock->GetHash());
+
+    connman->ForEachNode([&cmpct, pindex, &msgMaker, &hashBlock, connman](CNode* pnode) {
+        // TODO: Avoid the repeated-serialization here
+        if (pnode->fDisconnect)
+            return;
+        ProcessBlockAvailability(pnode->GetId());
+        CNodeState &state = *State(pnode->GetId());
+        // If the peer has, or we announced to them the previous block already,
+        // but we don't think they have this one, go ahead and announce it
+        if (state.fProvidesHeaderAndIDs && pnode->nVersion >= INVALID_CB_NO_BAN_VERSION && state.fWantsCmpctWitness &&
+                !PeerHasHeader(&state, pindex) &&
+                (PeerHasHeader(&state, pindex->pprev) || PeerHasHeader(&state, pindex->pprev->pprev) ||
+                 PeerHasHeader(&state, pindex->pprev->pprev->pprev) || PeerHasHeader(&state, pindex->pprev->pprev->pprev->pprev) ||
+                 PeerHasHeader(&state, pindex->pprev->pprev->pprev->pprev->pprev))) {
+            LogPrintf("%s USELESS BLOCK sending header-and-ids %s to peer=%d\n", "AnnounceCMPCT",
+                    hashBlock.ToString(), pnode->id);
+            connman->PushMessage(pnode, msgMaker.Make(NetMsgType::CMPCTBLOCK, cmpct));
+            //state.pindexBestHeaderSent = pindex;
+        }
+    });
+}
+
 void PeerLogicValidation::NewPoWValidBlock(const CBlockIndex *pindex, const std::shared_ptr<const CBlock>& pblock) {
     std::shared_ptr<const CBlockHeaderAndShortTxIDs> pcmpctblock = std::make_shared<const CBlockHeaderAndShortTxIDs> (*pblock, true);
     const CNetMsgMaker msgMaker(PROTOCOL_VERSION);
@@ -1099,7 +1139,26 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                         connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::INV, vInv));
                         pfrom->hashContinue.SetNull();
                     }
-                }
+                }// else send = false;
+
+
+                /*LOCK(cs_fucking_dirty_hacks);
+                for (std::shared_ptr<CBlock>& pblock : some_useless_blocks) {
+                    if (pblock && pblock->GetHash() == inv.hash) {
+                        LogPrintf("%s: SENDING BLOCK FROM DIRTY HACK CACHE %s to peer %d\n", __func__, inv.hash.ToString(), pfrom->GetId());
+                        if (inv.type == MSG_BLOCK)
+                            connman.PushMessage(pfrom, msgMaker.Make(SERIALIZE_TRANSACTION_NO_WITNESS, NetMsgType::BLOCK, *pblock));
+                        else if (inv.type == MSG_WITNESS_BLOCK)
+                            connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::BLOCK, *pblock));
+                        else if (inv.type == MSG_FILTERED_BLOCK)
+                            LogPrintf("...but it wanted a filtered one? WAT\n");
+                        else if (inv.type == MSG_CMPCT_BLOCK) {
+                            bool fPeerWantsWitness = State(pfrom->GetId())->fWantsCmpctWitness;
+                            int nSendFlags = fPeerWantsWitness ? 0 : SERIALIZE_TRANSACTION_NO_WITNESS;
+                            connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::BLOCK, *pblock));
+                        }
+                    }
+                }*/
             }
             else if (inv.type == MSG_TX || inv.type == MSG_WITNESS_TX)
             {
@@ -1169,6 +1228,59 @@ inline void static SendBlockTransactions(const CBlock& block, const BlockTransac
     const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
     int nSendFlags = State(pfrom->GetId())->fWantsCmpctWitness ? 0 : SERIALIZE_TRANSACTION_NO_WITNESS;
     connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::BLOCKTXN, resp));
+}
+
+void MaybeRequestUselessBlocks(const CBlockIndex* pindexLast2, CConnman& connman, CNode* pfrom) {
+    LOCK2(cs_main, cs_fucking_dirty_hacks);
+    const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
+    if (pindexLast2 && pindexLast2->pprev && pindexLast2->pprev->pprev && pindexLast2->pprev->pprev->pprev && pindexLast2->pprev->pprev->pprev->pprev &&
+            !chainActive.Contains(pindexLast2) && pindexLast2->nHeight >= chainActive.Tip()->nHeight - 10) {
+        for (int i = 0; i < 5; i++) {
+            if (chainActive.Contains(pindexLast2) || useless_block_index_ptrs.count(pindexLast2) || !pindexLast2->pprev)
+                break;
+
+            LogPrintf("REQUESTING USELESS BLOCK %s FROM PEER %d\n", pindexLast2->GetBlockHash().ToString(), pfrom->GetId());
+            std::vector<CInv> vGetData(1);
+            uint32_t nFetchFlags = GetFetchFlags(pfrom, pindexLast2->pprev, Params().GetConsensus());
+            vGetData[0] = CInv(MSG_BLOCK | nFetchFlags, pindexLast2->GetBlockHash());
+            connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETDATA, vGetData));
+
+            pindexLast2 = pindexLast2->pprev;
+        }
+    }
+}
+
+void MaybeReceiveUselessBlock(const std::shared_ptr<const CBlock>& pblock, CConnman& connman, CNode* pfrom=NULL) {
+    LOCK2(cs_main, cs_fucking_dirty_hacks);
+    auto it = mapBlockIndex.find(pblock->GetHash());
+    if (it == mapBlockIndex.end() || useless_block_index_ptrs.count(it->second))
+        return;
+    if (!chainActive.Contains(it->second) && it->second->nHeight >= chainActive.Tip()->nHeight - 10 && !(it->second->nStatus & BLOCK_FAILED_MASK)) {
+        if (!(it->second->nStatus & BLOCK_HAVE_DATA)) {
+            useless_block_index_ptrs.insert(it->second);
+            bool set = false;
+            std::shared_ptr<const CBlock>* lowest_height = nullptr;
+            for (std::shared_ptr<const CBlock>& pblockl : some_useless_blocks) {
+                if (!pblockl) {
+                    pblockl = pblock;
+                    set = true;
+                    break;
+                }
+                if (!lowest_height || mapBlockIndex[pblockl->GetHash()]->nHeight < mapBlockIndex[(*lowest_height)->GetHash()]->nHeight)
+                    lowest_height = &pblockl;
+            }
+            if (!set)
+                *lowest_height = pblock;
+
+            LogPrintf("ANNOUNCING USELESS BLOCK %s FROM PEER %d\n", pblock->GetHash().ToString(), pfrom ? pfrom->GetId() : -1);
+            if (pfrom != nullptr) // Didn't come in via FIBRE
+                UDPRelayBlock(*pblock);
+            AnnounceCMPCT(it->second, pblock, &connman);
+        } else if (pfrom != nullptr) {
+            LogPrintf("NOT ANNOUNCING USELESS BLOCK %s FROM PEER %d (REQUESTING INSTEAD)\n", pblock->GetHash().ToString(), pfrom ? pfrom->GetId() : -1);
+            MaybeRequestUselessBlocks(it->second, connman, pfrom);
+        }
+    }
 }
 
 bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
@@ -1686,6 +1798,17 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         LOCK(cs_main);
 
+        {
+            LOCK(cs_fucking_dirty_hacks);
+            for (std::shared_ptr<const CBlock>& pblock : some_useless_blocks) {
+                if (pblock && pblock->GetHash() == req.blockhash) {
+                    LogPrintf("%s: SENDING BLOCKTXN FROM USELESS BLOCK CACHE %s to peer %d\n", __func__, req.blockhash.ToString(), pfrom->GetId());
+                    SendBlockTransactions(*pblock, req, pfrom, connman);
+                    return true;
+                }
+            }
+        }
+
         BlockMap::iterator it = mapBlockIndex.find(req.blockhash);
         if (it == mapBlockIndex.end() || !(it->second->nStatus & BLOCK_HAVE_DATA)) {
             LogPrintf("Peer %d sent us a getblocktxn for a block we don't have", pfrom->id);
@@ -1771,6 +1894,34 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         // in the SendMessages logic.
         nodestate->pindexBestHeaderSent = pindex ? pindex : chainActive.Tip();
         connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::HEADERS, vHeaders));
+
+        /*if (!nodestate->pindexBestHeaderSent)
+            return true;
+
+        LOCK(cs_fucking_dirty_hacks);
+        for (std::shared_ptr<CBlock>& pblock : some_useless_blocks) {
+            if (!pblock) continue;
+            auto it = mapBlockIndex.find(pblock->GetHash());
+            if (it == mapBlockIndex.end()) {
+                LogPrintf("ERROR: DIRTY HACK CACHE BLOCK NOT IN mapBlockIndex: %s", pblock->GetHash().ToString());
+                continue;
+            }
+            pindex = it->second;
+            if (pindex->nStatus & BLOCK_FAILED_MASK) {
+                LogPrintf("WARNING: DIRTY HACK CACHE BLOCK FAILED %s\n", pblock->GetHash().ToString());
+                continue;
+            }
+            vHeaders.clear();
+            while (pindex && !chainActive.Contains(pindex)) {
+                vHeaders.push_back(pindex->GetBlockHeader());
+                pindex = pindex->pprev;
+            }
+            std::reverse(vHeaders);
+            if (!vHeaders.empty() && vHeaders.size() < 10) {
+                LogPrintf("SENDING %u HEADERS FROM DIRTY HACK CACHE (to %s)\n", vHeaders.size(), pblock->GetHash().ToString());
+                connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::HEADERS, vHeaders));
+            }
+        }*/
     }
 
 
@@ -2018,9 +2169,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         if (pindex->nStatus & BLOCK_HAVE_DATA) // Nothing to do here
             return true;
 
+        bool maybe_hack_request = pindex->nHeight >= chainActive.Tip()->nHeight - 10;
         if (pindex->nChainWork <= chainActive.Tip()->nChainWork || // We know something better
                 pindex->nTx != 0) { // We had this block at some point, but pruned it
-            if (fAlreadyInFlight) {
+            if (fAlreadyInFlight || (maybe_hack_request && pindex->nTx == 0)) {
                 // We requested this block for some reason, but our mempool will probably be useless
                 // so we just grab the block via normal getdata
                 std::vector<CInv> vInv(1);
@@ -2143,6 +2295,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (fNewBlock)
                 pfrom->nLastBlockTime = GetTime();
 
+            {
             LOCK(cs_main); // hold cs_main for CBlockIndex::IsValid()
             if (pindex->IsValid(BLOCK_VALID_TRANSACTIONS)) {
                 // Clear download state for this block, which is in
@@ -2151,6 +2304,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 // can't be used to interfere with block relay.
                 MarkBlockAsReceived(pblock->GetHash());
             }
+            }
+
+            MaybeReceiveUselessBlock(pblock, connman, pfrom);
         }
 
     }
@@ -2222,6 +2378,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 if (fLogIPs)
                     LogPrint("bench", "Block %s provided by %s\n", resp.blockhash.ToString(), pfrom->addr.ToString());
             }
+
+            MaybeReceiveUselessBlock(pblock, connman, pfrom);
         }
     }
 
@@ -2322,6 +2480,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
 
         bool fCanDirectFetch = CanDirectFetch(chainparams.GetConsensus());
+        bool requested = false;
+        const CBlockIndex* pindexLast2 = pindexLast;
         // If this set of headers is valid and ends in a block with at least as
         // much work as our tip, download as much as possible.
         if (fCanDirectFetch && pindexLast->IsValid(BLOCK_VALID_TREE) && chainActive.Tip()->nChainWork <= pindexLast->nChainWork) {
@@ -2368,10 +2528,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                         // In any case, we want to download using a compact block, not a regular one
                         vGetData[0] = CInv(MSG_CMPCT_BLOCK, vGetData[0].hash);
                     }
+                    requested = true;
                     connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETDATA, vGetData));
                 }
             }
         }
+
+        if (!requested) MaybeRequestUselessBlocks(pindexLast2, connman, pfrom);
         }
     }
 
@@ -2404,6 +2567,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (fLogIPs)
                 LogPrint("bench", "Block %s provided by %s\n", pblock->GetHash().ToString(), pfrom->addr.ToString());
         }
+
+        MaybeReceiveUselessBlock(pblock, connman, pfrom);
     }
 
 
