@@ -29,6 +29,7 @@ enum UDPMessageType {
     MSG_TYPE_BLOCK_CONTENTS = 4,
     MSG_TYPE_PING = 5,
     MSG_TYPE_PONG = 6,
+    MSG_TYPE_TX_CONTENTS = 7,
 };
 
 static const uint8_t UDP_MSG_TYPE_FLAGS_MASK = 0xf0;
@@ -96,5 +97,7 @@ extern bool maybe_have_write_nodes;
 void SendMessage(const UDPMessage& msg, const unsigned int length, const CService& service, const uint64_t magic, size_t group);
 void SendMessage(const UDPMessage& msg, const unsigned int length, const std::map<CService, UDPConnectionState>::const_iterator& node);
 void DisconnectNode(const std::map<CService, UDPConnectionState>::iterator& it);
+
+void UDPFillMessagesFromBlock(const CBlock& block, std::vector<UDPMessage>& msgs);
 
 #endif
