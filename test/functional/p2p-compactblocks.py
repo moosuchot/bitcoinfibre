@@ -15,9 +15,9 @@ from test_framework.blocktools import create_block, create_coinbase, add_witness
 from test_framework.script import CScript, OP_TRUE
 
 # Maximum number of parallel compact-blocks-in-flight bitcoind allows
-MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK = 2
+MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK = 5
 # Maximum number of missing txn in a compact block for parallel downloads
-MAX_GETBLOCKTXN_TXN_AFTER_FIRST_IN_FLIGHT = 10
+MAX_GETBLOCKTXN_TXN_AFTER_FIRST_IN_FLIGHT = 100
 
 # TestNode: A peer we use to send messages to bitcoind, and store responses.
 class TestNode(NodeConnCB):
