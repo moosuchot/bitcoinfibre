@@ -1,32 +1,33 @@
 /*
-	Copyright (c) 2017 Christopher A. Taylor.  All rights reserved.
+    Copyright (c) 2017 Christopher A. Taylor.  All rights reserved.
 
-	Redistribution and use in source and binary forms, with or without
-	modification, are permitted provided that the following conditions are met:
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
 
-	* Redistributions of source code must retain the above copyright notice,
-	  this list of conditions and the following disclaimer.
-	* Redistributions in binary form must reproduce the above copyright notice,
-	  this list of conditions and the following disclaimer in the documentation
-	  and/or other materials provided with the distribution.
-	* Neither the name of CM256 nor the names of its contributors may be
-	  used to endorse or promote products derived from this software without
-	  specific prior written permission.
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+      this list of conditions and the following disclaimer in the documentation
+      and/or other materials provided with the distribution.
+    * Neither the name of GF256 nor the names of its contributors may be
+      used to endorse or promote products derived from this software without
+      specific prior written permission.
 
-	THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-	AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-	IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-	ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
-	LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-	CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-	SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-	INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-	CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-	ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-	POSSIBILITY OF SUCH DAMAGE.
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+    LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+    CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+    SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+    INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+    CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+    ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
 */
 
-#pragma once
+#ifndef CAT_GF256_H
+#define CAT_GF256_H
 
 /*
     This module provides efficient implementations of bulk
@@ -47,35 +48,34 @@
 // Library version
 #define GF256_VERSION 2
 
-
 //------------------------------------------------------------------------------
 // Platform/Architecture
 
-#if defined(ANDROID) || defined(IOS)
+#if defined(ANDROID) || defined(IOS) || defined(LINUX_ARM)
     #define GF256_TARGET_MOBILE
-#endif
+#endif // ANDROID
 
 #if defined(__AVX2__) || (defined (_MSC_VER) && _MSC_VER >= 1900)
     #define GF256_TRY_AVX2 /* 256-bit */
     #include <immintrin.h>
     #define GF256_ALIGN_BYTES 32
-#else
+#else // __AVX2__
     #define GF256_ALIGN_BYTES 16
-#endif
+#endif // __AVX2__
 
 #if !defined(GF256_TARGET_MOBILE)
     // Note: MSVC currently only supports SSSE3 but not AVX2
     #include <tmmintrin.h> // SSSE3: _mm_shuffle_epi8
     #include <emmintrin.h> // SSE2
-#endif
+#endif // GF256_TARGET_MOBILE
 
 #if defined(HAVE_ARM_NEON_H)
     #include <arm_neon.h>
-#endif
+#endif // HAVE_ARM_NEON_H
 
 #if defined(GF256_TARGET_MOBILE)
 
-	#define GF256_ALIGNED_SIMD /* Inputs must be aligned to GF256_ALIGN_BYTES */
+    #define GF256_ALIGNED_ACCESSES /* Inputs must be aligned to GF256_ALIGN_BYTES */
 
 # if defined(HAVE_ARM_NEON_H)
     // Compiler-specific 128-bit SIMD register keyword
@@ -111,13 +111,13 @@
 // Note: Alignment only matters for ARM NEON where it should be 16
 #ifdef _MSC_VER
     #define GF256_ALIGNED __declspec(align(GF256_ALIGN_BYTES))
-#else
+#else // _MSC_VER
     #define GF256_ALIGNED __attribute__((aligned(GF256_ALIGN_BYTES)))
-#endif
+#endif // _MSC_VER
 
 #ifdef __cplusplus
 extern "C" {
-#endif
+#endif // __cplusplus
 
 
 //------------------------------------------------------------------------------
@@ -128,7 +128,7 @@ extern "C" {
 #ifdef _MSC_VER
     #pragma warning(push)
     #pragma warning(disable: 4324) // warning C4324: 'gf256_ctx' : structure was padded due to __declspec(align())
-#endif
+#endif // _MSC_VER
 
 struct gf256_ctx
 {
@@ -163,12 +163,12 @@ struct gf256_ctx
 
 #ifdef _MSC_VER
     #pragma warning(pop)
-#endif
+#endif // _MSC_VER
 
 extern gf256_ctx GF256Ctx;
 
 
-//-----------------------------------------------------------------------------
+//------------------------------------------------------------------------------
 // Initialization
 //
 // Initialize a context, filling in the tables.
@@ -243,13 +243,13 @@ extern void gf256_add2_mem(void * GF256_RESTRICT vz, const void * GF256_RESTRICT
 extern void gf256_addset_mem(void * GF256_RESTRICT vz, const void * GF256_RESTRICT vx,
                              const void * GF256_RESTRICT vy, int bytes);
 
-// Performs "z[] += x[] * y" bulk memory operation
-extern void gf256_muladd_mem(void * GF256_RESTRICT vz, uint8_t y,
-                             const void * GF256_RESTRICT vx, int bytes);
-
 // Performs "z[] = x[] * y" bulk memory operation
 extern void gf256_mul_mem(void * GF256_RESTRICT vz,
                           const void * GF256_RESTRICT vx, uint8_t y, int bytes);
+
+// Performs "z[] += x[] * y" bulk memory operation
+extern void gf256_muladd_mem(void * GF256_RESTRICT vz, uint8_t y,
+                             const void * GF256_RESTRICT vx, int bytes);
 
 // Performs "x[] /= y" bulk memory operation
 static GF256_FORCE_INLINE void gf256_div_mem(void * GF256_RESTRICT vz,
@@ -269,4 +269,6 @@ extern void gf256_memswap(void * GF256_RESTRICT vx, void * GF256_RESTRICT vy, in
 
 #ifdef __cplusplus
 }
-#endif
+#endif // __cplusplus
+
+#endif // CAT_GF256_H
