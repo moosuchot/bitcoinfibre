@@ -51,6 +51,10 @@
 //------------------------------------------------------------------------------
 // Platform/Architecture
 
+#ifdef __arm__
+    #define LINUX_ARM
+#endif
+
 #if defined(ANDROID) || defined(IOS) || defined(LINUX_ARM)
     #define GF256_TARGET_MOBILE
 #endif // ANDROID
