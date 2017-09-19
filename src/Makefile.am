@@ -254,6 +254,8 @@ crypto_libbitcoin_crypto_a_SOURCES = \
   crypto/aes.h \
   crypto/chacha20.h \
   crypto/chacha20.cpp \
+  crypto/poly1305.h \
+  crypto/poly1305.c \
   crypto/common.h \
   crypto/hmac_sha256.cpp \
   crypto/hmac_sha256.h \
