@@ -52,6 +52,16 @@ static void SHA256_32b(benchmark::State& state)
     }
 }
 
+static void SHA256_double_64b(benchmark::State& state)
+{
+    std::vector<uint8_t> in(64,0);
+    while (state.KeepRunning()) {
+        for (int i = 0; i < 100000; i++) {
+            DoubleSHA256_64byte(in.data(), in.data(), 1);
+        }
+    }
+}
+
 static void SHA512(benchmark::State& state)
 {
     uint8_t hash[CSHA512::OUTPUT_SIZE];
@@ -99,5 +109,6 @@ BENCHMARK(SHA512);
 
 BENCHMARK(SHA256_32b);
 BENCHMARK(SipHash_32b);
+BENCHMARK(SHA256_double_64b);
 BENCHMARK(FastRandom_32bit);
 BENCHMARK(FastRandom_1bit);
