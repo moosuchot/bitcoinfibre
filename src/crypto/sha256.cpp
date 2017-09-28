@@ -1,6 +1,8 @@
 // Copyright (c) 2014 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+//
+// Some is GPL from GCC (copyright Free Software Foundation)
 
 #include "crypto/sha256.h"
 #include "crypto/common.h"
@@ -473,6 +475,26 @@ TransformDouble64Type TransformDouble64 = sha256::TransformDouble64;
 TransformDouble64Type TransformDouble64_8way = nullptr;
 } // namespace
 
+// GPL from cpuid.h!
+#define cpuid_count_compat(level, count, a, b, c, d) \
+    __asm__("cpuid\n\t"                              \
+            : "=a" (a), "=b" (b), "=c" (c), "=d" (d) \
+            : "0" (level), "2" (count))
+
+static inline int get_cpuid_count_compat(unsigned int leaf, unsigned int subleaf,
+        unsigned int *eax, unsigned int *ebx,
+        unsigned int *ecx, unsigned int *edx) {
+
+    unsigned int ext = leaf & 0x80000000;
+    unsigned int maxlevel = __get_cpuid_max(ext, 0);
+
+    if (maxlevel == 0 || maxlevel < leaf)
+        return 0;
+
+    cpuid_count_compat(leaf, subleaf, *eax, *ebx, *ecx, *edx);
+    return 1;
+}
+
 std::string SHA256AutoDetect()
 {
 #if defined(EXPERIMENTAL_ASM) && (defined(__x86_64__) || defined(__amd64__))
@@ -481,7 +503,7 @@ std::string SHA256AutoDetect()
         Transform = sha256_sse4::Transform;
         TransformDouble64 = TransformDouble64Wrapper<sha256_sse4::Transform>;
         assert(SelfTest(Transform));
-        if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) && (ebx >> 5) & 1) {
+        if (get_cpuid_count_compat(7, 0, &eax, &ebx, &ecx, &edx) && (ebx >> 5) & 1) {
             TransformDouble64_8way = sha256_avx2::TransformDouble64_8way;
             return "sse4+avx2";
         }
