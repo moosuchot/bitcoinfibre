@@ -498,11 +498,11 @@ static void ProcessBlockThread() {
                 memcpy(&block.data_recvd[i * sizeof(UDPBlockMessage::data)], data_ptr, sizeof(UDPBlockMessage::data));
             }
 
+            CBlockHeaderAndLengthShortTxIDs header; // TODO: Move back below data_copied
             std::chrono::steady_clock::time_point data_copied;
             if (fBench)
                 data_copied = std::chrono::steady_clock::now();
 
-            CBlockHeaderAndLengthShortTxIDs header;
             try {
                 VectorInputStream stream(&block.data_recvd, SER_NETWORK, PROTOCOL_VERSION);
                 stream >> header;

@@ -218,22 +218,28 @@ public:
     CBlockHeaderAndLengthShortTxIDs(const CBlock& block, bool fDeterministic = false);
 
     // Dummy for deserialization
-    CBlockHeaderAndLengthShortTxIDs() {}
+    CBlockHeaderAndLengthShortTxIDs() { shorttxids.reserve(5000); txlens.reserve(5000); }
 
     // Fills a map from offset within a FEC-coded block to the tx index in the block
     // Returns false if this object is invalid (txlens.size() != shortxids.size())
     template<typename F>
     ReadStatus FillIndexOffsetMap(F& callback) const;
 
-    ADD_SERIALIZE_METHODS;
+    template<typename Stream>
+    void Serialize(Stream& s) const {
+        reinterpret_cast<const CBlockHeaderAndShortTxIDs*>(this)->Serialize(s);
+        for (size_t i = 0; i < txlens.size(); i++)
+            WriteVarInt<Stream, uint32_t>(s, txlens[i]);
+    }
 
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITE(*(CBlockHeaderAndShortTxIDs*)this);
+    template<typename Stream>
+    void Unserialize(Stream& s) {
+        reinterpret_cast<CBlockHeaderAndShortTxIDs*>(this)->Unserialize(s);
         txlens.resize(shorttxids.size());
         for (size_t i = 0; i < txlens.size(); i++)
-            READWRITE(VARINT(txlens[i]));
+            txlens[i] = ReadVarInt<Stream, uint32_t>(s);
     }
+
 };
 
 // Valid options for the SIZE_FACTOR are 1 or 2, see cpp for more info
